@@ -1,6 +1,7 @@
 import re
 import time
 import random
+import uuid
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 from src.utils.config import (
@@ -874,424 +875,135 @@ class OzonReviewParser:
             log_error(f"Ошибка при переходе на следующую страницу: {e}", exc_info=True)
             return False
     
-    def _parse_review(self, review_element, product_id, product_url):
+    def _parse_review_element(self, review_element, product_id, product_url):
         """
-        Извлекает данные из элемента отзыва.
+        Парсит отдельный элемент отзыва и извлекает все данные.
         
         Args:
-            review_element: Элемент отзыва
-            product_id: ID товара
-            product_url: URL товара
+            review_element: Элемент DOM, содержащий отзыв
+            product_id (str): ID продукта
+            product_url (str): URL продукта
             
         Returns:
-            dict: Словарь с данными отзыва
+            dict: Данные отзыва или None в случае ошибки
         """
         try:
-            # Создаем уникальный ID отзыва (сочетание ID товара и timestamp)
-            timestamp = int(time.time() * 1000)
-            review_id = f"{product_id}_{timestamp}"
+            # Генерируем уникальный ID для отзыва
+            review_id = str(uuid.uuid4())
             
-            # Создаем скриншот отзыва только в режиме отладки
-            if self.debug_mode:
-                try:
-                    review_element.screenshot(path=f"review_{review_id}.png")
-                    log_debug(f"Сделан скриншот отзыва: review_{review_id}.png")
-                except Exception as e:
-                    log_debug(f"Не удалось сделать скриншот отзыва: {e}")
+            # Если элемент имеет атрибут data-review-uuid, используем его
+            uuid_attr = review_element.get_attribute('data-review-uuid')
+            if uuid_attr:
+                review_id = uuid_attr
+                log_debug(f"Найден ID отзыва в атрибуте: {review_id}")
             
-            # Извлечение ID отзыва из атрибутов, если есть
+            # СТРОГО ищем текст отзыва по указанной структуре
+            text = ""
             try:
-                data_review_id = review_element.get_attribute('data-review-uuid') or review_element.get_attribute('data-review-id')
-                if data_review_id:
-                    review_id = data_review_id
-                    log_debug(f"Найден ID отзыва в атрибутах: {review_id}")
-                else:
-                    # Проверяем data-review-uuid в родительских элементах
-                    parent_id = review_element.evaluate("""(el) => {
-                        for (let i = 0; i < 3; i++) {
-                            if (!el.parentElement) return null;
-                            el = el.parentElement;
-                            if (el.getAttribute('data-review-uuid')) 
-                                return el.getAttribute('data-review-uuid');
-                        }
-                        return null;
-                    }""")
-                    if parent_id:
-                        review_id = parent_id
-                        log_debug(f"Найден ID отзыва в родительском элементе: {review_id}")
-            except Exception:
-                pass
+                # Точная структура: div.px7_31.y4p_31 > div.x7p_31 > div > span.p7x_31
+                text_container = review_element.query_selector('div[class*="px7_"][class*="y4p_"] > div[class*="x7p_"] > div > span[class*="p7x_"]')
                 
-            # Извлекаем информацию из атрибута data-review-uuid, содержащего полную информацию о review
-            try:
-                json_data = review_element.evaluate("""(el) => {
-                    const parentWithData = el.closest('[data-review-uuid]');
-                    if (parentWithData) {
-                        const dataAttr = parentWithData.getAttribute('data-review-uuid');
-                        try {
-                            // Проверяем, есть ли JSON в атрибуте
-                            return dataAttr;
-                        } catch (e) {
-                            return dataAttr;
-                        }
-                    }
-                    return null;
-                }""")
-                
-                if json_data:
-                    log_debug(f"Найдены данные отзыва в атрибуте: {json_data}")
+                if text_container:
+                    text = text_container.inner_text().strip()
+                    if text:
+                        log_debug(f"Найден текст отзыва по точной структуре: {text[:30]}...")
+                    
+                    # Проверяем, не является ли текст служебным сообщением
+                    if "Пользователь предпочёл скрыть свои данные" in text or "Количество в упаковке" in text:
+                        text = ""
+                        log_debug("Отфильтрован некорректный текст отзыва (служебное сообщение)")
             except Exception as e:
-                log_debug(f"Ошибка при извлечении JSON-данных: {e}")
+                log_debug(f"Ошибка при извлечении текста отзыва: {e}")
+            
+            # СТРОГО ищем автора отзыва
+            author = ""
+            try:
+                # Точная структура: span.p8u_31
+                author_element = review_element.query_selector('span[class*="p8u_"]')
                 
-            # Извлечение автора отзыва
-            author_selectors = [
-                # Селекторы из скриншота
-                '.r0o_32 .rv0_32',  # Автор в новой структуре
-                '.vw5_32 span',     # Потенциальное местоположение автора
-                '.tsBodyM',         # Классы заголовков, которые могут содержать имя автора
-                '.tsBodyL', 
-                # Общие селекторы
-                'div[data-widget="webReviewUserInfo"] span', 
-                'div.v9p_32 span', 
-                'div.tsHeadline span.tsBodyM', 
-                '[itemprop="author"]',
-                'span[data-auto="user-name"]',
-                '.review-author',
-                'span.rv0_32',
-                'div.rw5_32 span',
-                'div[data-qa="r0o j9n"] span',
-                'div.review-header span'
-            ]
-            
-            author = "Неизвестный автор"
-            for selector in author_selectors:
-                try:
-                    author_element = review_element.query_selector(selector)
-                    if author_element:
-                        author_text = author_element.inner_text().strip()
-                        if author_text:
-                            # Иногда имя содержит дополнительную информацию, берем только первое слово или два
-                            author_parts = author_text.split()
-                            if len(author_parts) >= 2:
-                                author = f"{author_parts[0]} {author_parts[1]}"
-                            else:
-                                author = author_text
-                            log_debug(f"Найден автор по селектору {selector}: {author}")
-                            break
-                except Exception as e:
-                    log_debug(f"Ошибка при извлечении автора по селектору {selector}: {e}")
-            
-            # Если автор не найден, ищем его с помощью JavaScript
-            if author == "Неизвестный автор":
-                try:
-                    author_js = review_element.evaluate("""(el) => {
-                        // Ищем в первых дочерних элементах имя автора
-                        const possibleAuthorElements = el.querySelectorAll('div[class^="r"], div[class^="v"], span[class^="r"], span[class^="v"]');
-                        
-                        for (const elem of possibleAuthorElements) {
-                            const text = elem.innerText.trim();
-                            // Исключаем строки с числами (даты, рейтинги)
-                            if (text && text.length > 0 && text.length < 30 && !/\\d+\\.\\d+\\.\\d+/.test(text) && !/\\d+\\s(шт|г|мл)/.test(text)) {
-                                return text;
-                            }
-                        }
-                        return null;
-                    }""")
+                if author_element:
+                    author = author_element.inner_text().strip()
+                    log_debug(f"Найден автор отзыва: {author}")
                     
-                    if author_js:
-                        author_parts = author_js.split()
-                        if len(author_parts) >= 2:
-                            author = f"{author_parts[0]} {author_parts[1]}"
-                        else:
-                            author = author_js
-                        log_debug(f"Найден автор с помощью JavaScript: {author}")
-                except Exception as e:
-                    log_debug(f"Ошибка при извлечении автора с JavaScript: {e}")
+                    # Проверяем, не является ли автор служебным сообщением
+                    if "Пользователь предпочёл скрыть свои данные" in author:
+                        log_debug("Автор отзыва скрыт системой")
+            except Exception as e:
+                log_debug(f"Ошибка при извлечении автора отзыва: {e}")
             
-            # Извлечение рейтинга
-            rating_selectors = [
-                # Селекторы на основе скриншота
-                'div.vp5_32',       # Контейнер с рейтингом (звездами)
-                # Общие селекторы для рейтинга
-                'div[data-widget="webReviewRating"] meta[itemprop="ratingValue"]',
-                'meta[itemprop="ratingValue"]',
-                'span.r1g_32',
-                'div.r0j_32',
-                'div[data-auto="rating-stars"] span',
-                '.star-rating',
-                'div.rating-stars',
-                'div.star-rating span.filled',
-                'div[data-auto="rate"] span',
-                'span.c-rating-stars__full',
-                'div[data-widget="webStars"]'
-            ]
+            # СТРОГО ищем дату отзыва
+            date = ""
+            try:
+                # Пробуем найти дату рядом с именем автора
+                date_element = review_element.query_selector('div[class*="rv1_"]')
+                
+                if date_element:
+                    date = date_element.inner_text().strip()
+                    log_debug(f"Найдена дата отзыва: {date}")
+            except Exception as e:
+                log_debug(f"Ошибка при извлечении даты отзыва: {e}")
             
+            # СТРОГО ищем вариант товара
+            product_variant = ""
+            try:
+                # Точная структура: a.y3p_31
+                variant_element = review_element.query_selector('a[class*="y3p_"]')
+                
+                if variant_element:
+                    product_variant = variant_element.inner_text().strip()
+                    log_debug(f"Найден вариант товара: {product_variant}")
+            except Exception as e:
+                log_debug(f"Ошибка при извлечении варианта товара: {e}")
+            
+            # СТРОГО ищем рейтинг (количество звезд)
             rating = 0
-            for selector in rating_selectors:
-                try:
-                    rating_element = review_element.query_selector(selector)
-                    if rating_element:
-                        # Для мета-тегов
-                        content = rating_element.get_attribute('content')
-                        if content and content.isdigit():
-                            rating = int(content)
-                            log_debug(f"Найден рейтинг в meta: {rating}")
-                            break
-                            
-                        # Для звезд по классам или стилям
-                        classes = rating_element.get_attribute('class') or ''
-                        if 'r1g_32' in classes or 'r0j_32' in classes or 'vp5_32' in classes:
-                            rating_text = rating_element.inner_text().strip()
-                            if rating_text.isdigit():
-                                rating = int(rating_text)
-                            elif ',' in rating_text:
-                                # Рейтинг может быть в формате "4,5"
-                                rating = int(float(rating_text.replace(',', '.')) + 0.5)
-                            log_debug(f"Найден рейтинг в классе: {rating}")
-                            break
-                                
-                        # Подсчет звезд через JavaScript
-                        star_count = rating_element.evaluate("""(el) => {
-                            // Ищем SVG или элементы, представляющие звезды
-                            const stars = el.querySelectorAll('svg[fill="#f9c000"], svg[fill="#ffb800"], svg[fill="#ff9900"], .filled');
-                            return stars ? stars.length : 0;
-                        }""")
-                        
-                        if star_count and star_count > 0:
-                            rating = star_count
-                            log_debug(f"Найден рейтинг по количеству звезд через JS: {rating}")
-                            break
-                except Exception as e:
-                    log_debug(f"Ошибка при извлечении рейтинга по селектору {selector}: {e}")
-            
-            # Если рейтинг не найден, используем JavaScript для подсчета звезд
-            if rating == 0:
-                try:
-                    stars_count = review_element.evaluate("""(el) => {
-                        // Ищем любые SVG с золотым заполнением (звезды)
-                        const allStars = el.querySelectorAll('svg');
-                        let filledStars = 0;
-                        
-                        for (const star of allStars) {
-                            const fill = star.getAttribute('fill');
-                            if (fill && (fill.includes('ff') || fill.includes('f9') || fill === 'gold' || fill === 'yellow')) {
-                                filledStars++;
-                            }
-                        }
-                        
-                        return filledStars;
-                    }""")
+            try:
+                # Проверяем наличие контейнера со звездами
+                rating_container = review_element.query_selector('div[class*="a5d25-a"]')
+                
+                if rating_container:
+                    # Считаем количество заполненных звезд
+                    filled_stars = review_element.eval_on_selector_all('div[class*="a5d25-a"] svg[fill="#f9c000"], div[class*="a5d25-a"] svg[fill="#ffb800"], div[class*="a5d25-a"] svg[fill="#ff9900"]', 'elements => elements.length')
                     
-                    if stars_count and stars_count > 0:
-                        rating = stars_count
-                        log_debug(f"Найден рейтинг по подсчету SVG звезд: {rating}")
-                except Exception as e:
-                    log_debug(f"Ошибка при подсчете звезд с JavaScript: {e}")
-                    
-            # Извлечение даты отзыва
-            date_selectors = [
-                # Селекторы из скриншота
-                '.rv1_32',          # Класс элемента с датой
-                # Общие селекторы для дат
-                'meta[itemprop="datePublished"]',
-                'div[data-widget="webReviewDateAndLikes"] time',
-                'time[itemprop="datePublished"]',
-                'div.r1c_32',
-                'div.tsBodyM time',
-                'span.review-date',
-                'div.review-date',
-                'div[data-auto="review-date"] span',
-                'span[data-auto="review-date"]',
-                'div.r0o_32 div.rv1_32'
-            ]
+                    if filled_stars and 0 < filled_stars <= 5:
+                        rating = filled_stars
+                        log_debug(f"Найден рейтинг отзыва: {rating}")
+            except Exception as e:
+                log_debug(f"Ошибка при извлечении рейтинга отзыва: {e}")
             
-            date_text = datetime.now().strftime("%d.%m.%Y")
-            for selector in date_selectors:
-                try:
-                    date_element = review_element.query_selector(selector)
-                    if date_element:
-                        # Для мета-тегов
-                        content = date_element.get_attribute('content')
-                        if content:
-                            date_text = content
-                            log_debug(f"Найдена дата в meta: {date_text}")
-                            break
-                            
-                        # Для обычных элементов
-                        inner_date = date_element.inner_text().strip()
-                        if inner_date:
-                            date_text = inner_date
-                            log_debug(f"Найдена дата в тексте: {date_text}")
-                            break
-                except Exception as e:
-                    log_debug(f"Ошибка при извлечении даты по селектору {selector}: {e}")
-            
-            # Если дата не найдена, ищем ее с помощью JavaScript
-            if date_text == datetime.now().strftime("%d.%m.%Y"):
-                try:
-                    date_js = review_element.evaluate("""(el) => {
-                        // Ищем текст, похожий на дату в формате DD месяц YYYY или простом числовом формате
-                        const textNodes = Array.from(el.querySelectorAll('*')).filter(n => 
-                            n.childNodes.length === 1 && n.childNodes[0].nodeType === 3);
-                        
-                        for (const node of textNodes) {
-                            const text = node.innerText.trim();
-                            // Ищем форматы типа: "17 февраля 2025" или "17.02.2025" или "17/02/2025"
-                            if (
-                                /\\d{1,2}\\s+[а-яА-Я]+\\s+\\d{4}/.test(text) || 
-                                /\\d{1,2}\\.\\d{1,2}\\.\\d{4}/.test(text) ||
-                                /\\d{1,2}\\/\\d{1,2}\\/\\d{4}/.test(text)
-                            ) {
-                                return text;
-                            }
-                        }
-                        return null;
-                    }""")
-                    
-                    if date_js:
-                        date_text = date_js
-                        log_debug(f"Найдена дата с помощью JavaScript: {date_text}")
-                except Exception as e:
-                    log_debug(f"Ошибка при извлечении даты с JavaScript: {e}")
-                    
-            # Извлечение текста отзыва - особое внимание на класс y4p_32 из скриншота
-            text_selectors = [
-                # Селекторы из скриншота
-                'span.y4p_32',      # Класс элемента с текстом отзыва (из скриншота)
-                '.y4p_32',          # Альтернативная запись
-                # Общие селекторы для текста отзыва
-                'div[itemprop="reviewBody"]',
-                'div[data-widget="webReviewText"]',
-                'span[itemprop="reviewBody"]',
-                'div.r8p_32',
-                'div.r0o_32 p',
-                'div.review-text',
-                'div[data-auto="review-text"]',
-                'div.review-comment',
-                'p.review-text',
-                'div.wp4_32',
-                'div.r0k_32 > div.r2k_32 > div',
-                'div.atst',
-                'div[data-qa="atst"]',
-                'div.tsBodyM p'
-            ]
-            
-            review_text = ""
-            for selector in text_selectors:
-                try:
-                    text_element = review_element.query_selector(selector)
-                    if text_element:
-                        inner_text = text_element.inner_text().strip()
-                        if inner_text and len(inner_text) > 5:  # Проверяем, что текст не пустой и не слишком короткий
-                            review_text = inner_text
-                            log_debug(f"Найден текст отзыва по селектору {selector}, начало: {review_text[:50]}...")
-                            break
-                except Exception as e:
-                    log_debug(f"Ошибка при извлечении текста по селектору {selector}: {e}")
-            
-            # Если текст не найден, используем JavaScript для поиска длинных текстовых блоков
-            if not review_text:
-                try:
-                    review_text_js = review_element.evaluate("""(el) => {
-                        // Ищем самый длинный текстовый блок, который может быть отзывом
-                        let longestText = '';
-                        
-                        // Рекурсивно ищем текстовые узлы
-                        function traverseNodes(node) {
-                            if (node.nodeType === 3) { // Текстовый узел
-                                const text = node.textContent.trim();
-                                if (text.length > longestText.length && text.length > 20) {
-                                    longestText = text;
-                                }
-                            } else if (node.nodeType === 1) { // Элемент
-                                for (const child of node.childNodes) {
-                                    traverseNodes(child);
-                                }
-                            }
-                        }
-                        
-                        traverseNodes(el);
-                        return longestText;
-                    }""")
-                    
-                    if review_text_js:
-                        review_text = review_text_js
-                        log_debug(f"Найден текст отзыва с помощью JavaScript: {review_text[:50]}...")
-                except Exception as e:
-                    log_debug(f"Ошибка при извлечении текста с JavaScript: {e}")
-            
-            # Извлечение лайков/дизлайков
-            likes_selectors = [
-                # Селекторы из структуры
-                'button:has-text("Да")',  # Кнопка "Да" для лайков
-                'div.r1d_32 span',       # Возможное местонахождение счетчика лайков
-                # Общие селекторы
-                'div[data-widget="webReviewLikes"] span',
-                'span[data-auto="review-likes-counter"]',
-                'div.review-likes span',
-                'div[data-auto="likes-counter"] span',
-                'span.likes-counter',
-                'div.atst span.tsBodyM',
-                'div.r0o_32 span.likes'
-            ]
-            
-            dislikes_selectors = [
-                # Селекторы из структуры
-                'button:has-text("Нет")', # Кнопка "Нет" для дизлайков
-                'div.r1e_32 span',       # Возможное местонахождение счетчика дизлайков
-                # Общие селекторы
-                'div[data-widget="webReviewDislikes"] span',
-                'span[data-auto="review-dislikes-counter"]',
-                'div.review-dislikes span',
-                'div[data-auto="dislikes-counter"] span',
-                'span.dislikes-counter',
-                'div.atst span.tsBodyM + span',
-                'div.r0o_32 span.dislikes'
-            ]
-            
-            likes = 0
-            for selector in likes_selectors:
-                try:
-                    likes_element = review_element.query_selector(selector)
-                    if likes_element:
-                        likes_text = likes_element.inner_text().strip()
-                        if likes_text.isdigit():
-                            likes = int(likes_text)
-                            log_debug(f"Найдены лайки: {likes}")
-                            break
-                except Exception as e:
-                    log_debug(f"Ошибка при извлечении лайков по селектору {selector}: {e}")
-            
-            dislikes = 0
-            for selector in dislikes_selectors:
-                try:
-                    dislikes_element = review_element.query_selector(selector)
-                    if dislikes_element:
-                        dislikes_text = dislikes_element.inner_text().strip()
-                        if dislikes_text.isdigit():
-                            dislikes = int(dislikes_text)
-                            log_debug(f"Найдены дизлайки: {dislikes}")
-                            break
-                except Exception as e:
-                    log_debug(f"Ошибка при извлечении дизлайков по селектору {selector}: {e}")
-                    
-            # Формируем словарь с данными отзыва
+            # Создаем словарь с данными отзыва
             review_data = {
                 "review_id": review_id,
                 "product_id": product_id,
                 "product_url": product_url,
                 "author": author,
                 "rating": rating,
-                "date": date_text,
-                "text": review_text,
-                "likes": likes,
-                "dislikes": dislikes
+                "date": date,
+                "text": text,
+                "product_variant": product_variant,
+                "likes": 0,
+                "dislikes": 0
             }
             
             return review_data
+            
         except Exception as e:
-            log_error(f"Ошибка при парсинге отзыва: {e}")
+            log_error(f"Ошибка при парсинге элемента отзыва: {e}")
             return None
+    
+    def _parse_review(self, review_element, product_id, product_url):
+        """
+        Прокси к _parse_review_element для обратной совместимости
+        
+        Args:
+            review_element: Элемент DOM, содержащий отзыв
+            product_id (str): ID продукта
+            product_url (str): URL продукта
+            
+        Returns:
+            dict: Данные отзыва или None в случае ошибки
+        """
+        return self._parse_review_element(review_element, product_id, product_url)
     
     def _find_review_container(self, page):
         """
@@ -1608,7 +1320,7 @@ class OzonReviewParser:
                 
                 # Обрабатываем каждый элемент отзыва
                 for element in review_elements:
-                    review_data = self._parse_review(element, product_id, product_url)
+                    review_data = self._parse_review_element(element, product_id, product_url)
                     if review_data:
                         reviews.append(review_data)
                 
@@ -1677,129 +1389,85 @@ class OzonReviewParser:
         # Если большинство проверенных элементов похожи на отзывы, считаем всю группу валидной
         return valid_elements >= min(2, len(elements))
     
-    def _parse_review_element(self, review_element, product_id, product_url):
+    def _is_newer_review(self, review, last_review_date, last_review_ids=None):
         """
-        Извлекает данные из элемента отзыва
+        Проверяет, является ли отзыв новее последнего собранного отзыва.
         
         Args:
-            review_element: Элемент отзыва
-            product_id: ID продукта
-            product_url: URL продукта
+            review (dict): Отзыв для проверки
+            last_review_date (str): Дата последнего собранного отзыва
+            last_review_ids (list): Список ID последних собранных отзывов
             
         Returns:
-            dict: Словарь с данными отзыва или None, если не удалось обработать
+            bool: True, если отзыв новее или еще не собран, False в противном случае
         """
+        # Если нет данных о последнем отзыве, считаем, что отзыв новый
+        if not last_review_date:
+            return True
+            
+        # Сначала проверяем ID отзыва
+        if last_review_ids and 'review_id' in review:
+            if review['review_id'] in last_review_ids:
+                log_debug(f"Отзыв с ID {review['review_id']} уже собран")
+                return False
+                
+        # Если дата отзыва не указана, считаем, что он новый
+        if 'date' not in review:
+            return True
+            
         try:
-            # Генерируем уникальный ID отзыва
-            review_id = review_element.get_attribute('data-review-uuid')
-            if not review_id:
-                timestamp = int(time.time() * 1000)
-                review_id = f"{product_id}_{timestamp}_{random.randint(1000, 9999)}"
+            # Обрабатываем разные форматы дат
+            review_date_str = review['date']
+            last_date_str = last_review_date
             
-            # Ищем текст отзыва
-            text = ""
-            text_selectors = ['span.y4p_32', '.y4p_32', 'div.r8p_32', 'div[class*="r8p_"]', 'div[class*="wp4_"]', 'p']
-            
-            for selector in text_selectors:
+            # Функция для преобразования строки в дату
+            def parse_date(date_str):
+                # Если формат DD.MM.YYYY
+                if re.match(r'\d{1,2}\.\d{1,2}\.\d{4}', date_str):
+                    day, month, year = map(int, date_str.split('.'))
+                    return datetime(year, month, day)
+                
+                # Если формат "30 марта 2025" или похожий
+                months_ru = {
+                    'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6,
+                    'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
+                }
+                
+                match = re.match(r'(\d{1,2})\s+([а-яА-Я]+)\s+(\d{4})', date_str)
+                if match:
+                    day = int(match.group(1))
+                    month_name = match.group(2).lower()
+                    year = int(match.group(3))
+                    
+                    if month_name in months_ru:
+                        month = months_ru[month_name]
+                        return datetime(year, month, day)
+                
+                # Если дата в формате ISO (YYYY-MM-DD)
                 try:
-                    text_element = review_element.query_selector(selector)
-                    if text_element:
-                        text = text_element.inner_text().strip()
-                        if text and len(text) > 10:  # Минимальная длина текста отзыва
-                            break
-                except Exception:
+                    return datetime.fromisoformat(date_str)
+                except ValueError:
                     pass
+                
+                # Если формат DD/MM/YYYY
+                if re.match(r'\d{1,2}/\d{1,2}/\d{4}', date_str):
+                    day, month, year = map(int, date_str.split('/'))
+                    return datetime(year, month, day)
+                
+                # Если ничего не подошло, используем текущую дату
+                log_warning(f"Неизвестный формат даты: {date_str}, используем текущую дату")
+                return datetime.now()
             
-            # Если не нашли текст по селекторам, ищем самый длинный текстовый блок
-            if not text:
-                try:
-                    text = review_element.evaluate("""(el) => {
-                        let longestText = '';
-                        const textElements = el.querySelectorAll('div, span, p');
-                        
-                        for (const elem of textElements) {
-                            const currentText = elem.innerText?.trim();
-                            if (currentText && currentText.length > longestText.length) {
-                                longestText = currentText;
-                            }
-                        }
-                        
-                        return longestText;
-                    }""")
-                except Exception:
-                    pass
+            # Конвертируем строки в объекты datetime
+            review_date = parse_date(review_date_str)
+            last_date = parse_date(last_date_str)
             
-            # Ищем автора отзыва
-            author = "Неизвестный автор"
-            author_selectors = ['span.rv0_32', 'div.rv0_32 span', 'div[class*="rv0_"] span']
-            
-            for selector in author_selectors:
-                try:
-                    author_element = review_element.query_selector(selector)
-                    if author_element:
-                        author_text = author_element.inner_text().strip()
-                        if author_text:
-                            author = author_text
-                            break
-                except Exception:
-                    pass
-            
-            # Ищем дату отзыва
-            date_text = datetime.now().strftime("%d.%m.%Y")
-            date_selectors = ['div.rv1_32', 'div[class*="rv1_"]', 'span[class*="rv1_"]', 'div[class*="r1c_"]']
-            
-            for selector in date_selectors:
-                try:
-                    date_element = review_element.query_selector(selector)
-                    if date_element:
-                        date_content = date_element.inner_text().strip()
-                        if date_content:
-                            date_text = date_content
-                            break
-                except Exception:
-                    pass
-            
-            # Ищем рейтинг (количество звезд)
-            rating = 0
-            try:
-                rating = review_element.evaluate("""(el) => {
-                    // Ищем SVG с золотым заполнением (звезды)
-                    const stars = el.querySelectorAll('svg[fill="#f9c000"], svg[fill="#ffb800"], svg[fill="#ff9900"]');
-                    return stars.length > 0 ? stars.length : 0;
-                }""")
-            except Exception:
-                pass
-            
-            # Если не нашли звезды, проверяем текстовый рейтинг
-            if not rating:
-                try:
-                    rating_element = review_element.query_selector('div.vp5_32 span, div[class*="vp5_"] span')
-                    if rating_element:
-                        rating_text = rating_element.inner_text().strip()
-                        if rating_text and rating_text.isdigit():
-                            rating = int(rating_text)
-                except Exception:
-                    pass
-            
-            # Минимальная проверка валидности отзыва
-            if not text or (not rating and not author):
-                return None
-            
-            return {
-                "review_id": review_id,
-                "product_id": product_id,
-                "product_url": product_url,
-                "author": author,
-                "rating": rating,
-                "date": date_text,
-                "text": text,
-                "likes": 0,
-                "dislikes": 0
-            }
-        
+            # Отзыв новее, если его дата больше даты последнего отзыва
+            return review_date >= last_date
         except Exception as e:
-            log_error(f"Ошибка при парсинге элемента отзыва: {e}")
-            return None
+            log_warning(f"Ошибка при сравнении дат отзывов: {e}")
+            # В случае ошибки считаем, что отзыв новый
+            return True
     
     def parse_product_reviews(self, product_url, max_reviews=None, incremental=None):
         """
@@ -1933,7 +1601,7 @@ class OzonReviewParser:
                 all_reviews = new_reviews
             else:
                 all_reviews = raw_reviews
-        
+                
         except Exception as e:
             log_error(f"Ошибка при парсинге отзывов: {e}", exc_info=True)
             # Делаем скриншот только в режиме отладки
@@ -1952,86 +1620,6 @@ class OzonReviewParser:
             log_info("Не удалось собрать ни одного отзыва")
         
         return all_reviews
-    
-    def _is_newer_review(self, review, last_review_date, last_review_ids=None):
-        """
-        Проверяет, является ли отзыв новее последнего собранного отзыва.
-        
-        Args:
-            review (dict): Отзыв для проверки
-            last_review_date (str): Дата последнего собранного отзыва
-            last_review_ids (list): Список ID последних собранных отзывов
-            
-        Returns:
-            bool: True, если отзыв новее или еще не собран, False в противном случае
-        """
-        # Если нет данных о последнем отзыве, считаем, что отзыв новый
-        if not last_review_date:
-            return True
-            
-        # Сначала проверяем ID отзыва
-        if last_review_ids and 'review_id' in review:
-            if review['review_id'] in last_review_ids:
-                log_debug(f"Отзыв с ID {review['review_id']} уже собран")
-                return False
-                
-        # Если дата отзыва не указана, считаем, что он новый
-        if 'date' not in review:
-            return True
-            
-        try:
-            # Обрабатываем разные форматы дат
-            review_date_str = review['date']
-            last_date_str = last_review_date
-            
-            # Функция для преобразования строки в дату
-            def parse_date(date_str):
-                # Если формат DD.MM.YYYY
-                if re.match(r'\d{1,2}\.\d{1,2}\.\d{4}', date_str):
-                    day, month, year = map(int, date_str.split('.'))
-                    return datetime(year, month, day)
-                
-                # Если формат "30 марта 2025" или похожий
-                months_ru = {
-                    'января': 1, 'февраля': 2, 'марта': 3, 'апреля': 4, 'мая': 5, 'июня': 6,
-                    'июля': 7, 'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12
-                }
-                
-                match = re.match(r'(\d{1,2})\s+([а-яА-Я]+)\s+(\d{4})', date_str)
-                if match:
-                    day = int(match.group(1))
-                    month_name = match.group(2).lower()
-                    year = int(match.group(3))
-                    
-                    if month_name in months_ru:
-                        month = months_ru[month_name]
-                        return datetime(year, month, day)
-                
-                # Если дата в формате ISO (YYYY-MM-DD)
-                try:
-                    return datetime.fromisoformat(date_str)
-                except ValueError:
-                    pass
-                
-                # Если формат DD/MM/YYYY
-                if re.match(r'\d{1,2}/\d{1,2}/\d{4}', date_str):
-                    day, month, year = map(int, date_str.split('/'))
-                    return datetime(year, month, day)
-                
-                # Если ничего не подошло, используем текущую дату
-                log_warning(f"Неизвестный формат даты: {date_str}, используем текущую дату")
-                return datetime.now()
-            
-            # Конвертируем строки в объекты datetime
-            review_date = parse_date(review_date_str)
-            last_date = parse_date(last_date_str)
-            
-            # Отзыв новее, если его дата больше даты последнего отзыва
-            return review_date >= last_date
-        except Exception as e:
-            log_warning(f"Ошибка при сравнении дат отзывов: {e}")
-            # В случае ошибки считаем, что отзыв новый
-            return True
     
     def parse_multiple_products(self, product_urls):
         """
