@@ -1,0 +1,8 @@
+# Список URL товаров для парсинга отзывов (по одному URL на строку)
+# Формат: URL [максимальное_количество_отзывов] [режим:full/incremental]
+# Например:
+# https://www.ozon.ru/product/smartfon-apple-iphone-13-128gb-belyy-608191880/ 500 incremental
+# https://www.ozon.ru/product/smartfon-samsung-galaxy-s21-128gb-chernyy-123456789/ 1000 full
+
+# Unilatex 12 шт
+https://www.ozon.ru/product/prezervativy-unilatex-ultrathin-12-sht-3-sht-v-podarok-210502516/ 100 incremental
