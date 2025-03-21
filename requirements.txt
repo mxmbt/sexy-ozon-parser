@@ -1,4 +1,11 @@
-playwright==1.40.0
-python-dotenv==1.0.0
+playwright==1.41.2
+selenium==4.17.2
 requests==2.31.0
-beautifulsoup4==4.12.2 
+python-dotenv==1.0.0
+fake-useragent==1.4.0
+beautifulsoup4==4.12.2
+lxml==4.9.3
+randomuser==1.6
+pytz==2023.3.post1
+colorlog==6.7.0
+undetected-chromedriver==3.5.4 
