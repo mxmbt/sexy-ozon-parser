@@ -958,18 +958,122 @@ class OzonReviewParser:
             # СТРОГО ищем рейтинг (количество звезд)
             rating = 0
             try:
-                # Проверяем наличие контейнера со звездами
-                rating_container = review_element.query_selector('div[class*="a5d25-a"]')
+                # На основе предоставленной структуры HTML, точное определение контейнера
+                # Первичный селектор: div.p6x_31 > div.a5d25-a
+                rating_container = review_element.query_selector('div[class*="p6x_"] > div[class*="a5d25-a"]')
+                
+                if not rating_container:
+                    # Альтернативный поиск, если точная структура не найдена
+                    rating_container = review_element.query_selector('div[class*="p6x_"], div[class*="a5d25-a"]')
                 
                 if rating_container:
-                    # Считаем количество заполненных звезд
-                    filled_stars = review_element.eval_on_selector_all('div[class*="a5d25-a"] svg[fill="#f9c000"], div[class*="a5d25-a"] svg[fill="#ffb800"], div[class*="a5d25-a"] svg[fill="#ff9900"]', 'elements => elements.length')
+                    log_debug("Найден контейнер для рейтинга")
+                    
+                    # Используем JavaScript для определения количества оранжевых звезд
+                    filled_stars = rating_container.evaluate("""(container) => {
+                        // Ищем все SVG элементы внутри контейнера
+                        const svgElements = Array.from(container.querySelectorAll('svg'));
+                        
+                        // Считаем количество SVG с оранжевым цветом (rgb(255, 165, 0))
+                        const filledStars = svgElements.filter(svg => {
+                            const style = svg.getAttribute('style') || '';
+                            return style.includes('rgb(255, 165, 0)') || 
+                                  style.includes('rgb(255,165,0)') ||
+                                  style.includes('color: rgb(255, 165, 0)') ||
+                                  style.includes('orange');
+                        });
+                        
+                        return filledStars.length;
+                    }""")
                     
                     if filled_stars and 0 < filled_stars <= 5:
                         rating = filled_stars
-                        log_debug(f"Найден рейтинг отзыва: {rating}")
+                        log_debug(f"Найдено {filled_stars} оранжевых звезд с помощью точного селектора")
+                    else:
+                        log_debug("Не удалось определить рейтинг по точному критерию, пробуем альтернативные методы")
+                        
+                        # Способ 2: Подсчет через CSS селекторы для разных форматов цвета
+                        selectors = [
+                            'svg[style*="color: rgb(255"]',
+                            'svg[style*="orange"]',
+                            'svg[style*="rgb(255, 165"]',
+                            'svg[style*="#f"]',
+                            'svg[fill*="#f"]',
+                            'svg[fill="currentColor"]'
+                        ]
+                        
+                        for selector in selectors:
+                            stars = rating_container.query_selector_all(selector)
+                            if stars and 0 < len(stars) <= 5:
+                                rating = len(stars)
+                                log_debug(f"Найдено {rating} SVG-звезд по селектору {selector}")
+                                break
+                        
+                        # Способ 3: Подсчет через JavaScript с более широкими критериями
+                        if rating == 0:
+                            js_count = rating_container.evaluate("""(container) => {
+                                // Ищем все SVG элементы внутри контейнера
+                                const svgElements = container.querySelectorAll('svg');
+                                
+                                // Подсчитываем SVG с оранжевым цветом (любой оттенок)
+                                let count = 0;
+                                for (const svg of svgElements) {
+                                    const style = window.getComputedStyle(svg);
+                                    const colorStyle = svg.getAttribute('style') || '';
+                                    const fillColor = svg.getAttribute('fill') || '';
+                                    
+                                    // Проверяем различные форматы цвета: RGB, HEX, названия
+                                    if (
+                                        (style.color && style.color.includes('255')) || // rgb содержит 255 (красный)
+                                        colorStyle.includes('rgb(255') || 
+                                        colorStyle.includes('orange') || 
+                                        colorStyle.includes('gold') ||
+                                        colorStyle.includes('#f') || // hex цвета с буквой f
+                                        fillColor.includes('#f') ||
+                                        fillColor.includes('orange') ||
+                                        fillColor.includes('gold')
+                                    ) {
+                                        count++;
+                                    }
+                                    
+                                    // Также проверяем, есть ли path с fill="currentColor"
+                                    const paths = svg.querySelectorAll('path[fill="currentColor"]');
+                                    if (paths.length > 0 && (
+                                        colorStyle.includes('rgb(255') || 
+                                        colorStyle.includes('orange') || 
+                                        colorStyle.includes('gold') ||
+                                        colorStyle.includes('#f')
+                                    )) {
+                                        if (count === 0) count++; // Добавляем, только если еще не считали эту звезду
+                                    }
+                                }
+                                
+                                return count;
+                            }""")
+                            
+                            if js_count and 0 < js_count <= 5:
+                                rating = js_count
+                                log_debug(f"Найдено {rating} SVG-звезд с помощью расширенного JavaScript")
+                        
+                        # Способ 4: Если все не помогло, просто считаем количество SVG (для стабильности)
+                        if rating == 0:
+                            # Считаем первые SVG элементы, которые не имеют rgba в стиле (обычно это заполненные звезды)
+                            filled_count = rating_container.evaluate("""(container) => {
+                                const svgs = Array.from(container.querySelectorAll('svg'));
+                                // Отфильтровываем SVG элементы, у которых нет rgba в стиле
+                                return svgs.filter(svg => {
+                                    const style = svg.getAttribute('style') || '';
+                                    return !style.includes('rgba');
+                                }).length;
+                            }""")
+                            
+                            if filled_count and 0 < filled_count <= 5:
+                                rating = filled_count
+                                log_debug(f"Определено примерное количество звезд: {rating} (путем исключения неокрашенных)")
+                    
+                    log_debug(f"Итоговый рейтинг отзыва: {rating}")
             except Exception as e:
-                log_debug(f"Ошибка при извлечении рейтинга отзыва: {e}")
+                log_error(f"Ошибка при извлечении рейтинга отзыва: {e}", exc_info=True)
             
             # Создаем словарь с данными отзыва
             review_data = {
