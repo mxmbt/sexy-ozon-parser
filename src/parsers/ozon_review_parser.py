@@ -934,12 +934,18 @@ class OzonReviewParser:
             # СТРОГО ищем дату отзыва
             date = ""
             try:
-                # Пробуем найти дату рядом с именем автора
-                date_element = review_element.query_selector('div[class*="rv1_"]')
+                # Пробуем найти дату по новому селектору
+                date_element = review_element.query_selector('div[class*="x5p_"]')
+                
+                # Если не нашли, пробуем по старому селектору
+                if not date_element:
+                    date_element = review_element.query_selector('div[class*="rv1_"]')
                 
                 if date_element:
                     date = date_element.inner_text().strip()
                     log_debug(f"Найдена дата отзыва: {date}")
+                else:
+                    log_debug("Не удалось найти элемент с датой отзыва")
             except Exception as e:
                 log_debug(f"Ошибка при извлечении даты отзыва: {e}")
             
@@ -1084,9 +1090,7 @@ class OzonReviewParser:
                 "rating": rating,
                 "date": date,
                 "text": text,
-                "product_variant": product_variant,
-                "likes": 0,
-                "dislikes": 0
+                "product_variant": product_variant
             }
             
             return review_data
@@ -1481,7 +1485,7 @@ class OzonReviewParser:
                 has_rating = len(rating_elements) > 0
                 
                 # Проверяем наличие даты или имени автора
-                author_date_elements = element.query_selector_all('div[class*="rv0_"], div[class*="rv1_"], div[class*="r1c_"]')
+                author_date_elements = element.query_selector_all('div[class*="rv0_"], div[class*="rv1_"], div[class*="r1c_"], div[class*="x5p_"]')
                 has_author_date = len(author_date_elements) > 0
                 
                 # Считаем элемент валидным, если есть хотя бы два из трех признаков
