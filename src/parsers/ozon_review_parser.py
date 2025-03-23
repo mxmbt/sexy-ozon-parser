@@ -768,33 +768,82 @@ class OzonReviewParser:
             if next_button:
                 log_info("Нажимаю на кнопку 'Дальше'")
                 
+                # Проверяем наличие модального окна авторизации
+                auth_modal = page.query_selector('div.vue-portal-target div.b6026-a3')
+                if auth_modal:
+                    log_warning("Обнаружено модальное окно авторизации, пытаюсь закрыть")
+                    try:
+                        # Пытаемся найти кнопку закрытия модального окна
+                        close_button = page.query_selector('button.b6026-b1, button.ag023-a0, div.vue-portal-target button[class*="close"], div.vue-portal-target svg[class*="close"]')
+                        if close_button:
+                            log_info("Нажимаю на кнопку закрытия модального окна")
+                            close_button.click()
+                            page.wait_for_timeout(1000)  # Ждем закрытия модального окна
+                        else:
+                            # Пробуем нажать Escape для закрытия модального окна
+                            log_info("Нажимаю Escape для закрытия модального окна")
+                            page.keyboard.press('Escape')
+                            page.wait_for_timeout(1000)  # Ждем закрытия модального окна
+                            
+                        # Проверяем, закрылось ли модальное окно
+                        auth_modal = page.query_selector('div.vue-portal-target div.b6026-a3')
+                        if auth_modal:
+                            log_warning("Не удалось закрыть модальное окно авторизации, пробую альтернативный способ навигации")
+                            # Пробуем использовать прямую навигацию по URL
+                            return self._try_direct_url_navigation(page, current_url)
+                            
+                    except Exception as e:
+                        log_warning(f"Ошибка при попытке закрыть модальное окно: {e}")
+                        # Пробуем использовать прямую навигацию по URL в случае ошибки
+                        return self._try_direct_url_navigation(page, current_url)
+                
                 # Прокручиваем к кнопке и делаем её видимой
                 next_button.scroll_into_view_if_needed()
                 time.sleep(random.uniform(0.5, 1.0))
                 
-                # Нажимаем на кнопку
-                next_button.click()
-                log_info("Выполнен клик по кнопке 'Дальше'")
-                
-                # Ждем загрузки страницы
                 try:
-                    page.wait_for_load_state("networkidle", timeout=15000)
+                    # Нажимаем на кнопку
+                    next_button.click(timeout=10000)  # Уменьшаем таймаут для более быстрого обнаружения проблем
+                    log_info("Выполнен клик по кнопке 'Дальше'")
+                    
+                    # Ждем загрузки страницы
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=15000)
+                    except Exception as e:
+                        log_warning(f"Таймаут при ожидании загрузки страницы: {e}")
+                    
+                    # Проверяем, изменился ли URL после клика
+                    new_url = page.url
+                    if new_url != current_url:
+                        log_info(f"Успешный переход на следующую страницу. Новый URL: {new_url}")
+                        
+                        # Имитируем поведение человека после загрузки новой страницы
+                        self._human_like_scroll(page)
+                        self._human_like_move(page)
+                        
+                        time.sleep(random.uniform(1.0, 2.0))
+                        return True
+                    else:
+                        # Проверяем, не появилось ли модальное окно после клика
+                        auth_modal = page.query_selector('div.vue-portal-target div.b6026-a3')
+                        if auth_modal:
+                            log_warning("После клика появилось модальное окно авторизации")
+                            # Пробуем прямую навигацию по URL
+                            return self._try_direct_url_navigation(page, current_url)
+                        else:
+                            log_warning("URL не изменился после клика, возможно, кнопка не сработала")
                 except Exception as e:
-                    log_warning(f"Таймаут при ожидании загрузки страницы: {e}")
-                
-                # Проверяем, изменился ли URL после клика
-                new_url = page.url
-                if new_url != current_url:
-                    log_info(f"Успешный переход на следующую страницу. Новый URL: {new_url}")
-                    
-                    # Имитируем поведение человека после загрузки новой страницы
-                    self._human_like_scroll(page)
-                    self._human_like_move(page)
-                    
-                    time.sleep(random.uniform(1.0, 2.0))
-                    return True
-                else:
-                    log_warning("URL не изменился после клика, возможно, кнопка не сработала")
+                    log_warning(f"Ошибка при клике на кнопку 'Дальше': {e}")
+                    # Проверяем, не появилось ли модальное окно после неудачной попытки клика
+                    auth_modal = page.query_selector('div.vue-portal-target div.b6026-a3')
+                    if auth_modal:
+                        log_warning("После попытки клика появилось модальное окно авторизации")
+                        # Пробуем прямую навигацию по URL
+                        return self._try_direct_url_navigation(page, current_url)
+                    else:
+                        # Если модального окна нет, возможно другая проблема с кнопкой
+                        log_warning("Проблема с кнопкой 'Дальше', пробую прямую навигацию по URL")
+                        return self._try_direct_url_navigation(page, current_url)
             
             # Второй метод: пробуем построить URL напрямую, если не удалось найти кнопку
             log_info("Попытка построить URL для следующей страницы...")
@@ -1757,3 +1806,80 @@ class OzonReviewParser:
     def close(self):
         """Закрытие хранилища данных"""
         self.db.close() 
+
+    def _try_direct_url_navigation(self, page, current_url):
+        """
+        Пробует перейти на следующую страницу через прямую навигацию по URL
+        
+        Args:
+            page: Объект страницы Playwright
+            current_url: Текущий URL страницы
+            
+        Returns:
+            bool: True, если переход выполнен успешно, иначе False
+        """
+        log_info("Попытка перехода на следующую страницу через прямую навигацию по URL")
+        
+        try:
+            # Если есть ?page=X в URL, заменяем X на X+1
+            if "page=" in current_url:
+                match = re.search(r'page=(\d+)', current_url)
+                if match:
+                    current_page = int(match.group(1))
+                    next_page = current_page + 1
+                    log_info(f"Текущая страница: {current_page}, переход на страницу {next_page}")
+                    
+                    next_url = re.sub(r'page=\d+', f'page={next_page}', current_url)
+                    log_info(f"Переход по прямому URL: {next_url}")
+                    
+                    try:
+                        page.goto(next_url, wait_until="domcontentloaded")
+                        page.wait_for_load_state("networkidle", timeout=15000)
+                        
+                        # Проверяем, изменился ли URL после перехода
+                        if page.url != current_url:
+                            log_info(f"Успешный переход по прямому URL на страницу {next_page}")
+                            
+                            # Имитируем поведение человека
+                            self._human_like_scroll(page)
+                            self._human_like_move(page)
+                            
+                            time.sleep(random.uniform(1.0, 2.0))
+                            return True
+                        else:
+                            log_warning("URL не изменился после перехода, возможно, страница не существует")
+                    except Exception as e:
+                        log_error(f"Ошибка при переходе по прямому URL: {e}")
+            else:
+                # Если это первая страница, добавляем page=2
+                next_url = None
+                if "?" in current_url:
+                    next_url = f"{current_url}&page=2"
+                else:
+                    next_url = f"{current_url}?page=2"
+                
+                log_info(f"Переход по прямому URL на вторую страницу: {next_url}")
+                
+                try:
+                    page.goto(next_url, wait_until="domcontentloaded")
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                    
+                    # Проверяем, изменился ли URL после перехода
+                    if page.url != current_url:
+                        log_info("Успешный переход на вторую страницу по прямому URL")
+                        
+                        # Имитируем поведение человека
+                        self._human_like_scroll(page)
+                        self._human_like_move(page)
+                        
+                        time.sleep(random.uniform(1.0, 2.0))
+                        return True
+                    else:
+                        log_warning("URL не изменился после перехода, возможно, страница не существует")
+                except Exception as e:
+                    log_error(f"Ошибка при переходе по прямому URL: {e}")
+        
+        except Exception as e:
+            log_error(f"Ошибка при попытке прямой навигации: {e}")
+        
+        return False
