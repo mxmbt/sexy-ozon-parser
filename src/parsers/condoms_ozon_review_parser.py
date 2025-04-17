@@ -32,15 +32,22 @@ class OzonReviewParser:
             str: ID продукта или None, если не удалось извлечь
         """
         # Пытаемся извлечь ID товара из URL, например из https://www.ozon.ru/product/item-name-123456/
-        match = re.search(r'/product/.*?-(\d+)/?', url)
+        # Уточненное выражение для /product/
+        match = re.search(r'/product/[^/]+-(\d+)/?', url)
         if match:
             return match.group(1)
             
-        # Альтернативный формат URL с параметром
+        # Новый паттерн для /context/detail/id/...
+        match = re.search(r'/context/detail/id/(\d+)/?', url)
+        if match:
+            return match.group(1)
+            
+        # Альтернативный формат URL с параметром id=
         match = re.search(r'id=(\d+)', url)
         if match:
             return match.group(1)
             
+        log_warning(f"Не удалось извлечь ID продукта из URL: {url}") # Добавим логгирование для отладки
         return None
     
     def _initialize_browser(self):

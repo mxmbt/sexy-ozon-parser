@@ -3,7 +3,7 @@ import argparse
 import json
 import os
 import time
-from src.parsers.ozon_review_parser import OzonReviewParser
+from parsers.lube_ozon_review_parser import OzonReviewParser
 from src.utils.logger import log_info, log_error
 
 def parse_args():

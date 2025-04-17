@@ -23,7 +23,10 @@ import sys
 import time
 import argparse
 from datetime import datetime
-from src.parsers.ozon_review_parser import OzonReviewParser
+# Импортируем оба парсера с псевдонимами
+from src.parsers.lube_ozon_review_parser import OzonReviewParser as LubeParser
+from src.parsers.condoms_ozon_review_parser import OzonReviewParser as CondomsParser # Используем имя файла с ' copy'
+# Исправляем пути импорта для утилит
 from src.utils.logger import log_info, log_error, log_warning
 from src.utils.config import INCREMENTAL_PARSING, MAX_REVIEWS_PER_PRODUCT
 
@@ -79,17 +82,19 @@ def read_urls():
             
     return parsed_data
 
-def main(debug_mode=False, force_full=False):
+def main(parser_type, debug_mode=False, force_full=False):
     """
     Основная функция для запуска парсера по расписанию.
     
     Args:
+        parser_type (str): Тип парсера для использования ('lube' или 'condoms')
         debug_mode (bool): Включить режим отладки с сохранением скриншотов
         force_full (bool): Принудительно запустить полный парсинг, игнорируя настройки инкрементного режима
     """
     log_info(f"Запуск планового парсинга отзывов: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_info(f"Режим отладки: {'включен' if debug_mode else 'выключен'}")
     log_info(f"Режим парсинга: {'полный (принудительно)' if force_full else 'в соответствии с настройками'}")
+    log_info(f"Выбранный парсер: {parser_type}")
     
     # Проверяем наличие файла с URL
     ensure_file_exists()
@@ -104,9 +109,17 @@ def main(debug_mode=False, force_full=False):
     log_info(f"Начинаем парсинг отзывов для {len(parsed_data)} товаров")
     start_time = time.time()
     
-    # Создаем парсер и запускаем парсинг
-    parser = OzonReviewParser(debug_mode=debug_mode)
-    
+    # Создаем экземпляр выбранного парсера
+    if parser_type == 'lube':
+        parser_instance = LubeParser(debug_mode=debug_mode)
+        log_info("Используется парсер для смазок (LubeParser)")
+    elif parser_type == 'condoms':
+        parser_instance = CondomsParser(debug_mode=debug_mode)
+        log_info("Используется парсер для презервативов (CondomsParser)")
+    else:
+        log_error(f"Неизвестный тип парсера: {parser_type}. Доступные типы: 'lube', 'condoms'.")
+        return 1
+        
     all_results = {}
     try:
         # Обрабатываем каждый URL отдельно с его настройками
@@ -127,7 +140,8 @@ def main(debug_mode=False, force_full=False):
             log_info(f"  Максимальное количество отзывов: {max_reviews}")
             
             try:
-                reviews = parser.parse_product_reviews(url, max_reviews, incremental)
+                # Используем созданный экземпляр парсера
+                reviews = parser_instance.parse_product_reviews(url, max_reviews, incremental)
                 all_results[url] = len(reviews)
                 log_info(f"  Собрано отзывов: {len(reviews)}")
             except Exception as e:
@@ -145,7 +159,9 @@ def main(debug_mode=False, force_full=False):
         log_error(f"Критическая ошибка при выполнении планового парсинга: {e}", exc_info=True)
         return 1
     finally:
-        parser.close()
+        # Закрываем парсер, если он был создан
+        if 'parser_instance' in locals() and parser_instance:
+            parser_instance.close()
     
     elapsed_time = time.time() - start_time
     log_info(f"Общее время выполнения: {elapsed_time:.2f} секунд")
@@ -157,7 +173,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Запуск планового парсинга отзывов Ozon')
     parser.add_argument('--debug', action='store_true', help='Включить режим отладки с сохранением скриншотов')
     parser.add_argument('--full', action='store_true', help='Принудительно запустить полный парсинг')
+    # Добавляем аргумент для выбора парсера и делаем его ОБЯЗАТЕЛЬНЫМ
+    parser.add_argument('-p', '--parser', type=str, choices=['lube', 'condoms'], required=True, 
+                        help='Тип парсера для использования (lube или condoms). Этот аргумент обязателен.')
     
     args = parser.parse_args()
     
-    sys.exit(main(debug_mode=args.debug, force_full=args.full)) 
+    # Передаем выбранный тип парсера в main
+    sys.exit(main(parser_type=args.parser, debug_mode=args.debug, force_full=args.full)) 

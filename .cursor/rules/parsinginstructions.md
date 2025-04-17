@@ -31,6 +31,15 @@
 6. **Сохранение данных** в JSON-файлы  
    *Файл: `src/database/json_storage.py`, метод `save_reviews`*
 
+## Выбор парсера
+
+В системе присутствуют два парсера, оптимизированные под разные структуры HTML страниц товаров:
+
+*   **lube**: Парсер для смазок (файл `src/parsers/lube_ozon_review_parser.py`)
+*   **condoms**: Парсер для презервативов (файл `src/parsers/condoms_ozon_review_parser.py`)
+
+При запуске скрипта `scheduled_parser.py` **обязательно** нужно указать, какой парсер использовать, с помощью аргумента `--parser` (или `-p`).
+
 ## Режимы запуска парсера
 
 ### Production и Debug режимы
@@ -88,34 +97,47 @@
 
 ## Команды запуска
 
+**Важно:** Все команды следует запускать с использованием `python3`.
+**Важно:** Аргумент `--parser` (или `-p`) является **обязательным** при любом запуске.
+
 ### Production режим (стандартный запуск)
 
-```bash
-python3 scheduled_parser.py
+# Запуск парсера для смазок
+python3 scheduled_parser.py --parser lube
+
+# Запуск парсера для презервативов
+python3 scheduled_parser.py -p condoms 
 ```
 
 ### Debug режим (для отладки и тестирования)
 
 ```bash
-python3 scheduled_parser.py --debug
+# Запуск парсера для смазок в режиме отладки
+python3 scheduled_parser.py --parser lube --debug
+
+# Запуск парсера для презервативов в режиме отладки
+python3 scheduled_parser.py -p condoms --debug
 ```
 
 ### Запуск с visible браузером (не headless)
 
 ```bash
-HEADLESS=false python3 scheduled_parser.py
+# Важно: Укажите нужный парсер (--parser lube или --parser condoms)
+HEADLESS=false python3 scheduled_parser.py --parser <тип_парсера>
 ```
 
 ### Запуск в полном режиме (не инкрементном)
 
 ```bash
-python3 scheduled_parser.py --full
+# Важно: Укажите нужный парсер (--parser lube или --parser condoms)
+python3 scheduled_parser.py --parser <тип_парсера> --full
 ```
 
 ### Запуск с комбинацией параметров
 
 ```bash
-python3 scheduled_parser.py --debug --full
+# Парсер презервативов, режим отладки, полный (не инкрементный) парсинг
+python3 scheduled_parser.py --parser condoms --debug --full
 ```
 
 ## Конфигурационные файлы

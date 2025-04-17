@@ -5,7 +5,7 @@ import logging
 import json
 import argparse
 from dotenv import load_dotenv
-from src.parsers.ozon_review_parser import OzonReviewParser
+from parsers.lube_ozon_review_parser import OzonReviewParser
 from src.utils.logger import log_info, log_error, log_warning, log_debug
 from src.utils.config import (
     HEADLESS, USER_AGENT, REQUEST_TIMEOUT, DEFAULT_DELAY,
